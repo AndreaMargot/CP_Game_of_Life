@@ -7,8 +7,8 @@ de cellules en deux dimensions. Ces cellules peuvent prendre deux états :
     - un état mort
 A l'initialisation, certaines cellules sont vivantes, d'autres mortes.
 Le principe du jeu est alors d'itérer de telle sorte qu'à chaque itération, une cellule va devoir interagir avec
-les huit cellules voisines (gauche, droite, bas, haut et les quatre en diagonales.) L'interaction se fait selon les
-règles suivantes pour calculer l'irération suivante :
+les huit cellules voisines (gauche, droite, bas, haut et les quatre en diagonale). L'interaction se fait selon les
+règles suivantes pour calculer l'itération suivante :
     - Une cellule vivante avec moins de deux cellules voisines vivantes meurt ( sous-population )
     - Une cellule vivante avec deux ou trois cellules voisines vivantes reste vivante
     - Une cellule vivante avec plus de trois cellules voisines vivantes meurt ( sur-population )
@@ -25,9 +25,9 @@ import pygame  as pg
 import numpy   as np
 from mpi4py import MPI
 
-globCom = MPI.COMM_WORLD.Dup() #dupliquer
-nbp     = globCom.size #nb processeur
-rank    = globCom.rank
+globCom = MPI.COMM_WORLD.Dup() #communicateur par défaut
+nbp     = globCom.size #nombre de processus lancés
+rank    = globCom.rank 
 name    = MPI.Get_processor_name()
 
 
@@ -35,11 +35,13 @@ class Grille:
     """
     Grille torique décrivant l'automate cellulaire.
     En entrée lors de la création de la grille :
-        - dimensions est un tuple contenant le nombre de cellules dans les deux directions (nombre lignes, nombre colonnes)
+        - rank est un entier qui correspond au rang du processus dans le communicateur sub_comm
+        - nbp est un entier qui sert à découper la grille en blocs de lignes
+        - dim est un tuple contenant le nombre de cellules dans les deux directions (nombre lignes, nombre colonnes)
         - init_pattern est une liste de cellules initialement vivantes sur cette grille (les autres sont considérées comme mortes)
         - color_life est la couleur dans laquelle on affiche une cellule vivante
         - color_dead est la couleur dans laquelle on affiche une cellule morte
-    Si aucun pattern n'est donné, on tire au hasard quels sont les cellules vivantes et les cellules mortes
+    Si aucun pattern n'est donné, on tire au hasard quelles sont les cellules vivantes et les cellules mortes
     Exemple :
        grid = Grille( (10,10), init_pattern=[(2,2),(0,2),(4,2),(2,0),(2,4)], color_life=pg.Color("red"), color_dead=pg.Color("black"))
     """
@@ -47,9 +49,9 @@ class Grille:
         import random
         ny = dim[0]
         self.ny_glob = ny
-        ny_loc = ny//nbp + (1 if rank < ny%nbp else 0)  #séparer la grille en nbp grilles (par ligne)
+        ny_loc = ny//nbp + (1 if rank < ny%nbp else 0)  #diviser la grille en blocs de lignes 
         self.y_start = ny_loc * rank + (ny%nbp if rank >= ny%nbp else 0)  #1 bloc de lignes par processeur
-        self.dimensions = (ny_loc+2, dim[1]) #on compte les voisin aux extremités
+        self.dimensions = (ny_loc+2, dim[1]) #on compte les voisins aux extrémités
         if init_pattern is not None:
             self.cells = np.zeros(self.dimensions, dtype=np.uint8) #grille du processeur vide
             indices_i = [(v[0]-self.y_start-ny+1)%ny for v in init_pattern] #ensemble des coordonnées des cellules initialement vivantes décalées en ligne
@@ -80,22 +82,22 @@ class Grille:
             for j in range(nx):
                 j_left = (j-1)%nx
                 j_right= (j+1)%nx
-                voisins_i = [i_above,i_above,i_above, i     , i      , i_below, i_below, i_below] #cordonnées en ligne des voisins
-                voisins_j = [j_left ,j      ,j_right, j_left, j_right, j_left , j      , j_right] #coordonnées en colonne des voisins
+                voisins_i = [i_above,i_above,i_above, i     , i      , i_below, i_below, i_below] #indices des lignes des voisins
+                voisins_j = [j_left ,j      ,j_right, j_left, j_right, j_left , j      , j_right] #indices des colonnes des voisins
                 voisines = np.array(self.cells[voisins_i,voisins_j]) #coordonnées des voisins
-                nb_voisines_vivantes = np.sum(voisines) #vivants : case remplie par un 1
-                if self.cells[i,j] == 1: # Si la cellule est vivante
-                    if (nb_voisines_vivantes < 2) or (nb_voisines_vivantes > 3): #conditions de mort de la cellule
-                        next_cells[i,j] = 0 # Cas de sous ou sur population, la cellule meurt
+                nb_voisines_vivantes = np.sum(voisines) #cellules vivantes : cases remplies par un 1
+                if self.cells[i,j] == 1: #si la cellule est vivante
+                    if (nb_voisines_vivantes < 2) or (nb_voisines_vivantes > 3): #cas de sous/sur-population, la cellule meurt
+                        next_cells[i,j] = 0                                     
                         diff_cells.append((i+self.y_start)*nx+j) #ajout des coordonnées à la liste des changements d'état  
                     else:
-                        next_cells[i,j] = 1 # Sinon elle reste vivante
-                #si la cellule est morte:
-                elif nb_voisines_vivantes == 3: # Cas où cellule morte mais entourée exactement de trois vivantes
-                    next_cells[i,j] = 1         # Naissance de la cellule
+                        next_cells[i,j] = 1 #sinon elle reste vivante
+                #si la cellule est morte
+                elif nb_voisines_vivantes == 3: #cas où la cellule morte est entourée exactement de trois vivantes (reproduction)
+                    next_cells[i,j] = 1         #naissance de la cellule
                     diff_cells.append((i+self.y_start)*nx+j)
                 else:
-                    next_cells[i,j] = 0         # Morte, elle reste morte.
+                    next_cells[i,j] = 0 #sinon elle reste morte
         self.cells = next_cells #maj de l'état des cellules
         return diff_cells #on retourne les changements d'état
 
@@ -103,7 +105,7 @@ class Grille:
         nx = self.dimensions[1] #nb colonnes
         for c in diff:
             nr = c//nx #ligne
-            nc = c%nx #colonne
+            nc = c%nx  #colonne
             self.cells[nr, nc] = (1- self.cells[nr, nc]) #modification de l'état de la cellule
 
 
@@ -116,7 +118,7 @@ class App:
     """
     def __init__(self, geometry, grid):
         self.grid = grid
-        # Calcul de la taille d'une cellule par rapport à la taille de la fenêtre et de la grille à afficher :
+        # Calcul de la taille d'une cellule par rapport à la taille de la fenêtre et de la grille à afficher 
         self.size_x = geometry[1]//grid.dimensions[1]
         self.size_y = geometry[0]//grid.dimensions[0]
         if self.size_x > 4 and self.size_y > 4 :
@@ -128,7 +130,6 @@ class App:
         self.height= grid.dimensions[0] * self.size_y
         # Création de la fenêtre à l'aide de tkinter
         self.screen = pg.display.set_mode((self.width,self.height))
-        #
         self.canvas_cells = []
 
     def compute_rectangle(self, i: int, j: int):
@@ -188,7 +189,7 @@ if __name__ == '__main__':
         resy = int(sys.argv[3])
         
     print(f"Pattern initial choisi : {choice}")
-    print(f"resolution ecran : {resx,resy}")
+    print(f"résolution écran : {resx,resy}")
     try:
         init_pattern = dico_patterns[choice]
     except KeyError:
@@ -199,14 +200,14 @@ if __name__ == '__main__':
     sub_rang = sub_comm.rank
 
     # ------------------------ calculateurs ------------------------
-    # proc de rang != de 0
+    #processus de rang != de 0
     if color != 0:
-        # création du morceau de grille
+        #création du morceau de grille
         grid = Grille(sub_rang, sub_size, *init_pattern)
         next_rank = (sub_rang - 1) % sub_size
         prev_rank = (sub_rang + 1) % sub_size
-    # ----------------- AFFICHAGE ------------------------------------
-    # proc de rang 0
+    # ----------------- AFFICHAGE ----------------------------------
+    #processus de rang 0
     else: 
         grid = Grille(0, 1, *init_pattern) #création d'une grille
         appli = App((resx, resy), grid)
@@ -217,6 +218,7 @@ if __name__ == '__main__':
         
         if color != 0:
         # ------------------------ calculateurs ------------------------
+            # Echange de messages pour mettre à jour les cellules fantômes 
             # Envoie de la ligne 1 au voisin du haut, reçoit dans ligne 0
             t1 = time.time()
             req1 = sub_comm.Irecv(grid.cells[0, :], source=next_rank)
@@ -232,12 +234,12 @@ if __name__ == '__main__':
             diff = grid.compute_next_iteration()
             globCom.send(diff, dest=0, tag=7)
             t2 = time.time()
-            print(f"temps calcul nouvelle génération avec {nbp} processeurs : {t2-t1} s")
+            print(f"temps de calcul de la nouvelle génération avec {nbp} processeurs : {t2-t1} s")
 
         else:
             # ----------------- AFFICHAGE -------------------------------
             t3 = time.time()
-            for i in range(1, nbp): # Recevoir de tous
+            for i in range(1, nbp): # Le processus de rang 0 reçoit des autres processus les changements d'état des cellules 
                 diff_partiel = globCom.recv(source=i, tag=7)
                 grid.modify(diff_partiel)
 
